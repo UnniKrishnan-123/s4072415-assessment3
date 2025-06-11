@@ -1,0 +1,298 @@
+---
+title: "Data Viz - Final Assessment"
+author: "Unni Krishnan - s4072415"
+date: "2025-06-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(shiny)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggrepel)
+library(scales)
+library(plotly)
+library(leaflet)
+
+poverty <- read_csv("share-of-population-living-in-extreme-poverty.csv", show_col_types = FALSE)
+gdp <- read_csv("gdp-per-capita-worldbank.csv", show_col_types = FALSE)
+gini <- read_csv("gini-coefficient.csv", show_col_types = FALSE)
+edu <- read_csv("total-government-expenditure-on-education-gdp.csv", show_col_types = FALSE)
+aid <- read_csv("foreign-aid-received-net.csv", show_col_types = FALSE)
+
+x_global_range <- range(gini$`Gini coefficient (before tax) (World Inequality Database)`, na.rm = TRUE)
+y_global_range <- range(poverty$`Share below $2.15 a day`, na.rm = TRUE)
+gdp_range <- range(gdp$`GDP per capita, PPP (constant 2021 international $)`[gdp$`GDP per capita, PPP (constant 2021 international $)` > 0], na.rm = TRUE)
+poverty_range <- range(poverty$`Share below $2.15 a day`[poverty$`Share below $2.15 a day` > 0], na.rm = TRUE)
+all_countries <- sort(unique(intersect(gdp$Entity, poverty$Country)))
+year_range <- sort(unique(intersect(gini$Year, poverty$Year)))
+
+ui <- fluidPage(
+  tags$head(
+  tags$style(HTML("
+    label[for='country_filter'] {
+      color: #1b5e20;
+      font-weight: bold;
+      font-size: 16px;
+    }
+
+    label[for='year_slider'] {
+      color: #FFC107;
+      font-weight: 800;
+      font-size: 20px;
+    }
+    label[for='Search & Select Countries (optional):'] {
+      color: #FFC107;
+      font-weight: 800;
+      font-size: 20px;
+    }
+
+  "))
+),
+
+  tags$head(
+    tags$style(HTML("
+      body {
+        background: linear-gradient(to right, #e8f5e9, #f1f8e9); /* Light green gradient */
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      }
+
+      .custom-title {
+        background-color: #2e7d32;
+        color: white;
+        padding: 20px;
+        text-align: center;
+        font-size: 28px;
+        font-weight: bold;
+        border-radius: 5px;
+        margin-bottom: 30px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+      }
+
+      .well {
+        background-color: #ffffffcc !important; /* semi-transparent white */
+        border: none;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+      }
+    "))
+  ),
+  tags$div(
+  tags$h1("The Price of Progress: Why Poverty Persists Despite Global Growth",
+          style = "color: #2e7d32; font-weight: bold; text-align: center; margin-bottom: 20px;"),
+  tags$style(HTML("
+    h1 {
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+    }
+  "))
+)
+,
+tags$style(HTML("
+  .nav-tabs > li > a {
+    color: #2e7d32 !important;
+    font-weight: bold;
+  }
+
+  .nav-tabs > li.active > a,
+  .nav-tabs > li.active > a:focus,
+  .nav-tabs > li.active > a:hover {
+    background-color: #2e7d32 !important;
+    color: white !important;
+    border-color: #2e7d32 !important;
+  }
+
+  .nav-tabs > li > a:hover {
+    background-color: #a5d6a7 !important;
+    color: black !important;
+  }
+")),
+
+  tabsetPanel(
+    tabPanel("Global Poverty Trends",
+      fluidRow(
+        column(4, selectizeInput("country_filter", "Search & Select Countries (optional):",
+                                 choices = all_countries, selected = NULL, multiple = TRUE,
+                                 options = list(placeholder = 'Type to search or leave blank for all'))),
+        column(4, sliderInput("year_slider", "Select Year:",
+                              min = 2000, max = 2022, value = 2000, sep = "", step = 1, ticks = FALSE))
+      ),
+      fluidRow(
+        column(12, align = "center", plotOutput("poverty_trend", height = "500px", width = "90%"))
+      )
+    ),
+
+    tabPanel("Growth vs Inequality",
+      fluidRow(
+        column(3, selectInput("tab2_year", "Select Year for Comparison:", choices = year_range, selected = max(year_range))),
+        column(5, selectizeInput("bubble_country_filter", "Filter Countries (optional):",
+                                 choices = all_countries, selected = NULL, multiple = TRUE)),
+        column(2, actionButton("reset_btn", "Reset Filter", class = "btn btn-warning", width = "100%"))
+      ),
+      fluidRow(column(12, plotlyOutput("bubble_plot", height = "540px", width = "100%")))
+    ),
+
+    tabPanel("Investment & Aid",
+  div(style = "overflow-y: hidden; overflow-x: hidden; max-height: 100vh;",
+    fluidRow(
+      column(4,
+             selectInput("indicator_choice", "Choose Indicator:",
+                         choices = c("Education Spending", "Foreign Aid"))
+      ),
+      column(4,
+             sliderInput("tab3_year", "Select Year:",
+                         min = 2000, max = 2022, value = 2022, step = 1, sep = "")
+      )
+    ),
+    fluidRow(
+      column(12,
+             plotlyOutput("investment_dual_plot", height = "500px", width = "100%"))
+    )
+  )
+)
+
+)
+)
+
+server <- function(input, output, session) {
+
+  observeEvent(input$reset_btn, {
+    updateSelectizeInput(session, "bubble_country_filter", selected = character(0))
+  })
+
+  output$poverty_trend <- renderPlot({
+    selected_year <- input$year_slider
+    selected_countries <- input$country_filter
+
+    gdp_data <- gdp %>% filter(Year == selected_year)
+    poverty_data <- poverty %>% filter(Year == selected_year)
+    plot_data <- inner_join(gdp_data, poverty_data, by = c("Entity" = "Country"))
+
+    if (!is.null(selected_countries) && length(selected_countries) > 0) {
+      plot_data <- plot_data %>% filter(Entity %in% selected_countries)
+    }
+
+    ggplot(plot_data, aes(x = `GDP per capita, PPP (constant 2021 international $)`, y = `Share below $2.15 a day`, label = Entity)) +
+      geom_point(alpha = 0.7, color = "darkorange", size = 3) +
+      geom_text_repel(size = 3, max.overlaps = 25) +
+      scale_x_log10(labels = dollar_format(prefix = "$"), limits = gdp_range) +
+      scale_y_log10(labels = label_percent(accuracy = 1), limits = poverty_range) +
+      labs(title = paste("Poverty vs GDP per Capita in", selected_year),
+           x = "GDP per Capita (log scale)", y = "% in Extreme Poverty") +
+      theme_minimal()
+  })
+
+  output$bubble_plot <- renderPlotly({
+    selected_year <- input$tab2_year
+    selected_countries <- input$bubble_country_filter
+
+    poverty_data <- poverty %>% filter(Year == selected_year)
+    gini_data <- gini %>% filter(Year == selected_year)
+    gdp_data <- gdp %>% filter(Year == selected_year)
+
+    merged <- inner_join(poverty_data, gini_data, by = "Country") %>%
+      inner_join(gdp_data, by = c("Country" = "Entity")) %>%
+      drop_na(`Gini coefficient (before tax) (World Inequality Database)`,
+              `Share below $2.15 a day`,
+              `GDP per capita, PPP (constant 2021 international $)`)
+
+    if (!is.null(selected_countries) && length(selected_countries) > 0) {
+      merged <- merged %>% filter(Country %in% selected_countries)
+    }
+
+    plot_ly(
+      data = merged,
+      x = ~`Gini coefficient (before tax) (World Inequality Database)`,
+      y = ~`Share below $2.15 a day`,
+      size = ~`GDP per capita, PPP (constant 2021 international $)`,
+      type = 'scatter',
+      mode = 'markers',
+      color = ~Country,
+      sizes = c(10, 60),
+      text = ~paste("Country:", Country,
+                    "<br>Gini:", round(`Gini coefficient (before tax) (World Inequality Database)`, 1),
+                    "<br>Poverty:", round(`Share below $2.15 a day`, 2),
+                    "<br>GDP per Capita:", dollar(`GDP per capita, PPP (constant 2021 international $)`)),
+      hoverinfo = "text"
+    ) %>%
+      layout(
+      title = list(
+        text = paste("Inequality vs Poverty (", selected_year, ")", sep = ""),
+        font = list(color = "darkblue", size = 20)
+      ),
+      xaxis = list(
+        title = list(text = "Gini Coefficient", font = list(color = "darkgreen")),
+        range = x_global_range, zeroline = FALSE
+      ),
+      yaxis = list(
+        title = list(text = "% in Extreme Poverty", font = list(color = "darkred")),
+        tickformat = ".0%", range = c(0, 10)
+      ),
+      showlegend = FALSE
+    )
+})
+
+  output$investment_dual_plot <- renderPlotly({
+    selected_year <- input$tab3_year
+    latest_poverty <- poverty %>%
+      filter(Year == selected_year)
+
+    if (input$indicator_choice == "Education Spending") {
+      latest_data <- edu %>%
+        filter(Year == selected_year) %>%
+        rename(Country = Entity)
+
+      merged <- inner_join(latest_data, latest_poverty, by = "Country")
+
+      plot_ly(merged, x = ~`Public spending on education as a share of GDP (historical and recent)`,
+              y = ~`Share below $2.15 a day`,
+              type = 'scatter',
+              mode = 'markers',
+              text = ~Country,
+              hoverinfo = "text",
+              marker = list(color = 'forestgreen', size = 10)) %>%
+       layout(
+  title = list(
+    text = paste("Education Spending vs Extreme Poverty in", selected_year),
+    font = list(color = "forestgreen", size = 20)
+  ),
+  xaxis = list(title = list(text = "% of GDP on Education", font = list(color = "green"))),
+  yaxis = list(title = list(text = "% in Extreme Poverty", font = list(color = "darkgreen")), tickformat = ".0%")
+)
+
+    } else {
+      latest_data <- aid %>%
+        filter(Year == selected_year) %>%
+        rename(Country = Entity)
+
+      merged <- inner_join(latest_data, latest_poverty, by = "Country")
+
+      plot_ly(merged, x = ~`Official development assistance (ODA) by recipient (Official donors)`,
+              y = ~`Share below $2.15 a day`,
+              type = 'scatter',
+              mode = 'markers',
+              text = ~Country,
+              hoverinfo = "text",
+              marker = list(color = 'purple', size = 10)) %>%
+        layout(
+  title = list(
+    text = paste("Foreign Aid vs Extreme Poverty in", selected_year),
+    font = list(color = "purple", size = 20)
+  ),
+  xaxis = list(title = list(text = "Foreign Aid Received (US$)", font = list(color = "indigo")), type = "log"),
+  yaxis = list(title = list(text = "% in Extreme Poverty", font = list(color = "darkviolet")), tickformat = ".0%")
+)
+
+    }
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+```
+
